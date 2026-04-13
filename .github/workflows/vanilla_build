@@ -1,4 +1,4 @@
-name: Build Patched Kernel 5.11.5
+name: Build Vulnerable Kernel 5.11.5
 
 on:
   push:
@@ -54,13 +54,14 @@ jobs:
         run: |
           tar -xf linux-5.11.5.tar.xz
 
+
       - name: Configure kernel
         working-directory: linux-5.11.5
         run: |
           # Start with default config
           make defconfig
 
-          # Set LOCALVERSION to -vulnerable (lowercase for Debian compliance)
+          # Set LOCALVERSION to -patched (lowercase for Debian compliance)
           scripts/config --set-str LOCALVERSION "-vulnerable"
 
           # Disable debug info and BTF to fix objtool errors
@@ -106,6 +107,6 @@ jobs:
       - name: Upload .deb packages
         uses: actions/upload-artifact@v4
         with:
-          name: patched-kernel-packages
+          name: vulnerable-kernel-packages
           path: "*.deb"
           if-no-files-found: error
