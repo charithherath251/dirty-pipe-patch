@@ -1,117 +1,97 @@
-name: Build Patched Kernel
-on: [push]
+name: Build Patched Kernel 5.11.5
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt update
-          sudo apt install -y build-essential libncurses-dev bison flex \
-            libssl-dev libelf-dev bc rsync debhelper
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            rsync \
+            debhelper
 
-      - name: Download Kernel Source
+      - name: Download kernel source (with retry)
         run: |
-          wget https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz
+          KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz"
+          MAX_RETRIES=5
+          RETRY_DELAY=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+            if wget --timeout=60 --tries=1 -q "$KERNEL_URL" -O linux-5.11.5.tar.xz; then
+              echo "Download successful."
+              break
+            fi
+            if [ "$i" -eq "$MAX_RETRIES" ]; then
+              echo "All download attempts failed."
+              exit 1
+            fi
+            echo "Download failed. Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
+
+      - name: Extract kernel source
+        run: |
           tar -xf linux-5.11.5.tar.xz
 
-      - name: Apply Patches
+      - name: Apply patched source files
         run: |
-          cp splice.c linux-5.11.5/fs/splice.c
-          cp iov_iter.c linux-5.11.5/lib/iov_iter.c
+          cp -v splice.c linux-5.11.5/fs/splice.c
+          cp -v iov_iter.c linux-5.11.5/lib/iov_iter.c
 
-      - name: Fix subcmd-util.h for GCC 12+
+      - name: Configure kernel
+        working-directory: linux-5.11.5
         run: |
-          # Directly rewrite the xrealloc function to avoid the use-after-free pattern.
-          # GCC 12+ treats realloc(ptr, ...) followed by any use of ptr as an error.
-          # The fix: null out ptr immediately after realloc so GCC knows it's dead.
-          cat > linux-5.11.5/tools/lib/subcmd/subcmd-util.h << 'EOF'
-          #ifndef __SUBCMD_UTIL_H
-          #define __SUBCMD_UTIL_H
-
-          #include <stdio.h>
-          #include <stdlib.h>
-          #include <string.h>
-
-          #define NORETURN __attribute__((__noreturn__))
-
-          static NORETURN inline void die(const char *err, ...)
-          {
-                  va_list params;
-                  va_start(params, err);
-                  vfprintf(stderr, err, params);
-                  fputc('\n', stderr);
-                  va_end(params);
-                  exit(1);
-          }
-
-          static inline void *xrealloc(void *ptr, size_t size)
-          {
-                  /* Use a temporary so GCC 12+ doesn't flag ptr as used-after-realloc */
-                  void *tmp = ptr;
-                  void *ret = realloc(tmp, size);
-                  if (!ret) {
-                          ret = realloc(NULL, size > 0 ? size : 1);
-                          if (!ret)
-                                  die("Out of memory, realloc failed");
-                  }
-                  return ret;
-          }
-
-          static inline void *xcalloc(size_t nmemb, size_t size)
-          {
-                  void *ret = calloc(nmemb, size);
-                  if (!ret)
-                          die("Out of memory, calloc failed");
-                  return ret;
-          }
-
-          static inline void *xmalloc(size_t size)
-          {
-                  void *ret = malloc(size);
-                  if (!ret)
-                          die("Out of memory, malloc failed");
-                  return ret;
-          }
-
-          static inline void *xzalloc(size_t size)
-          {
-                  return xcalloc(1, size);
-          }
-
-          static inline char *xstrdup(const char *str)
-          {
-                  char *ret = strdup(str);
-                  if (!ret)
-                          die("Out of memory, strdup failed");
-                  return ret;
-          }
-
-          #endif /* __SUBCMD_UTIL_H */
-          EOF
-
-      - name: Configure and Build
-        run: |
-          cd linux-5.11.5
-
+          # Start with default config
           make defconfig
 
-          ./scripts/config --set-str LOCALVERSION "-patched"
-          ./scripts/config --disable DEBUG_INFO
-          ./scripts/config --disable DEBUG_INFO_BTF
-          ./scripts/config --disable UNWINDER_ORC
-          ./scripts/config --enable UNWINDER_FRAME_POINTER
-          ./scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
-          ./scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
+          # Set LOCALVERSION to -patched (lowercase for Debian compliance)
+          scripts/config --set-str LOCALVERSION "-patched"
 
+          # Disable debug info and BTF to fix objtool errors
+          scripts/config --disable DEBUG_INFO
+          scripts/config --disable DEBUG_INFO_BTF
+          scripts/config --disable DEBUG_INFO_DWARF4
+          scripts/config --disable DEBUG_INFO_DWARF5
+
+          # Fix unwinder: disable ORC, enable frame pointer
+          scripts/config --disable UNWINDER_ORC
+          scripts/config --enable UNWINDER_FRAME_POINTER
+
+          # Ensure STACK_VALIDATION is disabled (avoids objtool dependency)
+          scripts/config --disable STACK_VALIDATION
+
+          # Resolve any new dependencies from config changes
           make olddefconfig
+
+      - name: Build .deb packages
+        working-directory: linux-5.11.5
+        run: |
           make -j$(nproc) bindeb-pkg
 
-      - name: Upload Artifacts
+      - name: Upload .deb packages
         uses: actions/upload-artifact@v4
         with:
-          name: patched-kernel-debs
-          path: ./*.deb
+          name: patched-kernel-packages
+          path: linux-5.11.5/../*.deb
+          if-no-files-found: error
