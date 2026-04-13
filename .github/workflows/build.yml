@@ -31,7 +31,7 @@ jobs:
           make help # to initialize
           make defconfig
           # Scripted way to add your "-PATCHED" tag
-          scripts/config --set-str LOCALVERSION "-PATCHED"
+          scripts/config --set-str LOCALVERSION "-patched"
           # Build the .deb packages (this is faster than a full install)
           make -j$(nproc) bindeb-pkg
 
