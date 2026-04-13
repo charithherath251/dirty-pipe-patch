@@ -1,0 +1,111 @@
+name: Build Patched Kernel 5.11.5
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            rsync \
+            debhelper
+
+      - name: Download kernel source (with retry)
+        run: |
+          KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz"
+          MAX_RETRIES=5
+          RETRY_DELAY=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+            if wget --timeout=60 --tries=1 -q "$KERNEL_URL" -O linux-5.11.5.tar.xz; then
+              echo "Download successful."
+              break
+            fi
+            if [ "$i" -eq "$MAX_RETRIES" ]; then
+              echo "All download attempts failed."
+              exit 1
+            fi
+            echo "Download failed. Retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+          done
+
+      - name: Extract kernel source
+        run: |
+          tar -xf linux-5.11.5.tar.xz
+
+      - name: Configure kernel
+        working-directory: linux-5.11.5
+        run: |
+          # Start with default config
+          make defconfig
+
+          # Set LOCALVERSION to -vulnerable (lowercase for Debian compliance)
+          scripts/config --set-str LOCALVERSION "-vulnerable"
+
+          # Disable debug info and BTF to fix objtool errors
+          scripts/config --disable DEBUG_INFO
+          scripts/config --disable DEBUG_INFO_BTF
+          scripts/config --disable DEBUG_INFO_DWARF4
+          scripts/config --disable DEBUG_INFO_DWARF5
+
+          # Fix unwinder: disable ORC, enable frame pointer
+          scripts/config --disable UNWINDER_ORC
+          scripts/config --enable UNWINDER_FRAME_POINTER
+
+          # Ensure STACK_VALIDATION is disabled (avoids objtool dependency)
+          scripts/config --disable STACK_VALIDATION
+
+          # Resolve any new dependencies from config changes
+          make olddefconfig
+
+          # olddefconfig may re-enable STACK_VALIDATION via dependencies;
+          # force-disable it again and re-resolve
+          scripts/config --disable STACK_VALIDATION
+          make olddefconfig
+
+      - name: Fix objtool GCC 12+ compatibility
+        working-directory: linux-5.11.5
+        run: |
+          # GCC 12+ introduces -Wuse-after-free which triggers -Werror in objtool.
+          # The offending code is in tools/lib/subcmd/subcmd-util.h (not tools/objtool/).
+          # Fix 1: Strip -Werror from ALL tools Makefiles (objtool, lib/subcmd, build).
+          find tools/ -type f \( -name 'Makefile' -o -name 'Makefile.*' -o -name '*.mk' \) \
+            -exec sed -i 's/-Werror//g' {} +
+
+          # Fix 2: Directly patch subcmd-util.h to suppress the use-after-free warning
+          # around the xrealloc function that GCC 12+ flags.
+          sed -i '1i #pragma GCC diagnostic ignored "-Wuse-after-free"' \
+            tools/lib/subcmd/subcmd-util.h
+
+      - name: Build .deb packages
+        working-directory: linux-5.11.5
+        run: |
+          make -j$(nproc) bindeb-pkg
+
+      - name: Upload .deb packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-kernel-packages
+          path: "*.deb"
+          if-no-files-found: error
