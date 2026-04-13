@@ -15,7 +15,8 @@ jobs:
 
       - name: Download Kernel Source
         run: |
-          wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz
+          - name: Download Kernel Source+
+          wget https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz
           tar -xf linux-5.11.5.tar.xz
 
       - name: Apply Patches
