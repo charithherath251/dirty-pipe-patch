@@ -84,10 +84,23 @@ jobs:
           # Resolve any new dependencies from config changes
           make olddefconfig
 
+          # olddefconfig may re-enable STACK_VALIDATION via dependencies;
+          # force-disable it again and re-resolve
+          scripts/config --disable STACK_VALIDATION
+          make olddefconfig
+
+      - name: Fix objtool GCC 12+ compatibility
+        working-directory: linux-5.11.5
+        run: |
+          # GCC 12+ introduces -Wuse-after-free which triggers -Werror in objtool.
+          # Kernel 5.11.5 predates this; strip -Werror from objtool build files.
+          find tools/objtool -name 'Makefile' -exec sed -i 's/-Werror//g' {} +
+          sed -i 's/-Werror//g' tools/build/Makefile.build 2>/dev/null || true
+
       - name: Build .deb packages
         working-directory: linux-5.11.5
         run: |
-          make -j$(nproc) bindeb-pkg
+          make -j$(nproc) bindeb-pkg HOSTCFLAGS="-Wno-error=use-after-free"
 
       - name: Upload .deb packages
         uses: actions/upload-artifact@v4
