@@ -1,0 +1,42 @@
+name: Build Patched Kernel
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc rsync debhelper
+
+      - name: Download Kernel Source
+        run: |
+          wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.11.5.tar.xz
+          tar -xf linux-5.11.5.tar.xz
+
+      - name: Apply Patches
+        run: |
+          # Overwrite the original source files with your patched versions
+          cp splice.c linux-5.11.5/fs/splice.c
+          cp iov_iter.c linux-5.11.5/lib/iov_iter.c
+
+      - name: Configure and Build
+        run: |
+          cd linux-5.11.5
+          # Use a standard generic config
+          make help # to initialize
+          make defconfig
+          # Scripted way to add your "-PATCHED" tag
+          scripts/config --set-str LOCALVERSION "-PATCHED"
+          # Build the .deb packages (this is faster than a full install)
+          make -j$(nproc) bindeb-pkg
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-kernel-debs
+          path: ./*.deb
