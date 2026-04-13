@@ -112,5 +112,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: patched-kernel-packages
-          path: linux-5.11.5/../*.deb
+          path: "*.deb"
           if-no-files-found: error
