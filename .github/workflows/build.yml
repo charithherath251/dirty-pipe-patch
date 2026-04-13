@@ -27,24 +27,26 @@ jobs:
         run: |
           cd linux-5.11.5
 
-          # Pin to GCC 12 - modern GCC (13+) causes objtool issues on 5.11
-          export CC=gcc-12
-          export HOSTCC=gcc-12
+          # Fix 1: Patch the objtool source that breaks on GCC 12+ 
+          # (use-after-free warning treated as error in subcmd-util.h)
+          sed -i 's/cc1: all warnings being treated as errors//' tools/objtool/Makefile 2>/dev/null || true
+          sed -i 's/-Werror//' tools/objtool/Makefile
 
           make defconfig
 
           ./scripts/config --set-str LOCALVERSION "-patched"
           ./scripts/config --disable DEBUG_INFO
           ./scripts/config --disable DEBUG_INFO_BTF
-          ./scripts/config --disable SYSTEM_TRUSTED_KEYS
-          ./scripts/config --disable SYSTEM_REVOCATION_KEYS
           ./scripts/config --disable UNWINDER_ORC
           ./scripts/config --enable UNWINDER_FRAME_POINTER
+          ./scripts/config --disable SYSTEM_TRUSTED_KEYS
+          ./scripts/config --disable SYSTEM_REVOCATION_KEYS
+          # Fix 2: disable objtool entirely - not needed for functional patching
+          ./scripts/config --disable STACK_VALIDATION
 
-          # THIS IS THE KEY FIX - reconciles config changes before building
           make olddefconfig
 
-          make -j$(nproc) bindeb-pkg CC=gcc-12 HOSTCC=gcc-12
+          make -j$(nproc) bindeb-pkg+
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
