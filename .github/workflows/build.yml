@@ -27,12 +27,13 @@ jobs:
       - name: Configure and Build
         run: |
           cd linux-5.11.5
-          # Use a standard generic config
-          make help # to initialize
           make defconfig
-          # Scripted way to add your "-PATCHED" tag
-          scripts/config --set-str LOCALVERSION "-patched"
-          # Build the .deb packages (this is faster than a full install)
+          ./scripts/config --set-str LOCALVERSION "-patched"
+          # These three lines help bypass the objtool errors:
+          ./scripts/config --disable DEBUG_INFO
+          ./scripts/config --disable DEBUG_INFO_BTF
+          ./scripts/config --disable UNWINDER_ORC
+          ./scripts/config --enable UNWINDER_FRAME_POINTER
           make -j$(nproc) bindeb-pkg
 
       - name: Upload Artifacts
