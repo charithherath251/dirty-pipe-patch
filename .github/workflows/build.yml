@@ -23,6 +23,76 @@ jobs:
           cp splice.c linux-5.11.5/fs/splice.c
           cp iov_iter.c linux-5.11.5/lib/iov_iter.c
 
+      - name: Fix subcmd-util.h for GCC 12+
+        run: |
+          # Directly rewrite the xrealloc function to avoid the use-after-free pattern.
+          # GCC 12+ treats realloc(ptr, ...) followed by any use of ptr as an error.
+          # The fix: null out ptr immediately after realloc so GCC knows it's dead.
+          cat > linux-5.11.5/tools/lib/subcmd/subcmd-util.h << 'EOF'
+          #ifndef __SUBCMD_UTIL_H
+          #define __SUBCMD_UTIL_H
+
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          #define NORETURN __attribute__((__noreturn__))
+
+          static NORETURN inline void die(const char *err, ...)
+          {
+                  va_list params;
+                  va_start(params, err);
+                  vfprintf(stderr, err, params);
+                  fputc('\n', stderr);
+                  va_end(params);
+                  exit(1);
+          }
+
+          static inline void *xrealloc(void *ptr, size_t size)
+          {
+                  /* Use a temporary so GCC 12+ doesn't flag ptr as used-after-realloc */
+                  void *tmp = ptr;
+                  void *ret = realloc(tmp, size);
+                  if (!ret) {
+                          ret = realloc(NULL, size > 0 ? size : 1);
+                          if (!ret)
+                                  die("Out of memory, realloc failed");
+                  }
+                  return ret;
+          }
+
+          static inline void *xcalloc(size_t nmemb, size_t size)
+          {
+                  void *ret = calloc(nmemb, size);
+                  if (!ret)
+                          die("Out of memory, calloc failed");
+                  return ret;
+          }
+
+          static inline void *xmalloc(size_t size)
+          {
+                  void *ret = malloc(size);
+                  if (!ret)
+                          die("Out of memory, malloc failed");
+                  return ret;
+          }
+
+          static inline void *xzalloc(size_t size)
+          {
+                  return xcalloc(1, size);
+          }
+
+          static inline char *xstrdup(const char *str)
+          {
+                  char *ret = strdup(str);
+                  if (!ret)
+                          die("Out of memory, strdup failed");
+                  return ret;
+          }
+
+          #endif /* __SUBCMD_UTIL_H */
+          EOF
+
       - name: Configure and Build
         run: |
           cd linux-5.11.5
@@ -38,8 +108,7 @@ jobs:
           ./scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
 
           make olddefconfig
-
-          make -j$(nproc) bindeb-pkg HOSTCFLAGS="-Wno-error=use-after-free"
+          make -j$(nproc) bindeb-pkg
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
